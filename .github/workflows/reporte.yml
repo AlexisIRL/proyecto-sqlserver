@@ -1,0 +1,88 @@
+
+name: Generar Reporte CSV
+
+on:
+  schedule:
+    - cron: '0 12 * * *'
+  workflow_dispatch:
+
+jobs:
+  reporte:
+    runs-on: ubuntu-latest
+
+    env:
+      MSSQL_SA_PASSWORD: ${{ secrets.MSSQL_SA_PASSWORD }}
+
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Iniciar SQL Server
+        run: |
+          docker run -d \
+            --name sqlserver \
+            -p 1433:1433 \
+            -e ACCEPT_EULA=Y \
+            -e MSSQL_PID=Developer \
+            -e MSSQL_SA_PASSWORD="$MSSQL_SA_PASSWORD" \
+            -v "$GITHUB_WORKSPACE/sql:/scripts" \
+            mcr.microsoft.com/mssql/server:2022-latest
+
+      - name: Esperar SQL Server
+        run: |
+          for i in {1..30}; do
+            if docker exec \
+              -e SQLCMDPASSWORD="$MSSQL_SA_PASSWORD" \
+              sqlserver \
+              /opt/mssql-tools18/bin/sqlcmd \
+              -C -S localhost -U sa -Q "SELECT 1" \
+              >/dev/null 2>&1; then
+              echo "SQL Server listo"
+              exit 0
+            fi
+            sleep 10
+          done
+
+          docker logs sqlserver
+          exit 1
+
+      - name: Preparar base de datos
+        run: |
+          for file in \
+            create_database.sql \
+            create_tables.sql \
+            create_inventory.sql \
+            create_procedure.sql \
+            create_trigger.sql \
+            test_data.sql
+          do
+            docker exec \
+              -e SQLCMDPASSWORD="$MSSQL_SA_PASSWORD" \
+              sqlserver \
+              /opt/mssql-tools18/bin/sqlcmd \
+              -C -b -S localhost -U sa \
+              -i "/scripts/$file"
+          done
+
+      - name: Generar reporte CSV
+        run: |
+          mkdir -p reporte
+
+          echo "VentaID,Producto,Cantidad,Fecha" > reporte/ventas.csv
+
+          docker exec \
+            -e SQLCMDPASSWORD="$MSSQL_SA_PASSWORD" \
+            sqlserver \
+            /opt/mssql-tools18/bin/sqlcmd \
+            -C -S localhost -U sa \
+            -d EmpresaDB \
+            -s "," -W -h -1 \
+            -Q "SET NOCOUNT ON; SELECT VentaID, Producto, Cantidad, CONVERT(VARCHAR(19), Fecha, 120) FROM Ventas ORDER BY VentaID;" \
+            >> reporte/ventas.csv
+
+      - name: Publicar reporte como Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: reporte-ventas
+          path: reporte/ventas.csv
+          retention-days: 30
