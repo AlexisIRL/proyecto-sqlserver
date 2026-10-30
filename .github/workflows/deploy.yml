@@ -1,1 +1,84 @@
+name: Deploy SQL Server with Docker
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      ACCEPT_EULA: Y
+      MSSQL_PID: Developer
+      MSSQL_SA_PASSWORD: ${{ secrets.MSSQL_SA_PASSWORD }}
+
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Iniciar SQL Server en Docker
+        run: |
+          docker run -d \
+            --name sqlserver \
+            -p 1433:1433 \
+            -e ACCEPT_EULA=Y \
+            -e MSSQL_PID=Developer \
+            -e MSSQL_SA_PASSWORD="$MSSQL_SA_PASSWORD" \
+            -v "$GITHUB_WORKSPACE/sql:/scripts" \
+            mcr.microsoft.com/mssql/server:2022-latest
+
+      - name: Esperar a SQL Server
+        run: |
+          for i in {1..30}; do
+            if docker exec \
+              -e SQLCMDPASSWORD="$MSSQL_SA_PASSWORD" \
+              sqlserver \
+              /opt/mssql-tools18/bin/sqlcmd \
+              -C -S localhost -U sa -Q "SELECT 1" \
+              >/dev/null 2>&1; then
+              echo "SQL Server está listo"
+              exit 0
+            fi
+            sleep 10
+          done
+
+          echo "SQL Server no inició correctamente"
+          docker logs sqlserver
+          exit 1
+
+      - name: Crear base de datos y ejecutar scripts
+        run: |
+          for file in \
+            create_database.sql \
+            create_tables.sql \
+            create_inventory.sql \
+            create_procedure.sql \
+            create_trigger.sql \
+            test_data.sql
+          do
+            echo "Ejecutando $file"
+
+            docker exec \
+              -e SQLCMDPASSWORD="$MSSQL_SA_PASSWORD" \
+              sqlserver \
+              /opt/mssql-tools18/bin/sqlcmd \
+              -C -b -S localhost -U sa \
+              -i "/scripts/$file"
+          done
+
+      - name: Verificar resultados
+        run: |
+          docker exec \
+            -e SQLCMDPASSWORD="$MSSQL_SA_PASSWORD" \
+            sqlserver \
+            /opt/mssql-tools18/bin/sqlcmd \
+            -C -S localhost -U sa \
+            -d EmpresaDB \
+            -Q "SELECT * FROM Ventas; SELECT * FROM AuditoriaVentas; SELECT * FROM Inventario;"
+
+      - name: Mostrar resultado
+        run: echo "Despliegue completado correctamente"
 
