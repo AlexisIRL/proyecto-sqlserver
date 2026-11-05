@@ -7,11 +7,39 @@ CREATE OR ALTER PROCEDURE sp_RegistrarAuditoria
 AS
 BEGIN
     SET NOCOUNT ON;
+    SET XACT_ABORT ON;
 
-    IF @Cantidad <= 0
-        THROW 50001, 'La cantidad debe ser mayor que cero.', 1;
+    BEGIN TRY
+        BEGIN TRANSACTION;
 
-    INSERT INTO Ventas (Producto, Cantidad)
-    VALUES (@Producto, @Cantidad);
+        IF @Cantidad <= 0
+            THROW 50001, 'La cantidad debe ser mayor que cero.', 1;
+
+        IF NOT EXISTS (
+            SELECT 1
+            FROM Inventario
+            WHERE Producto = @Producto
+        )
+            THROW 50002, 'El producto no existe en el inventario.', 1;
+
+        UPDATE Inventario
+        SET Existencias = Existencias - @Cantidad
+        WHERE Producto = @Producto
+          AND Existencias >= @Cantidad;
+
+        IF @@ROWCOUNT = 0
+            THROW 50003, 'No hay existencias suficientes.', 1;
+
+        INSERT INTO Ventas (Producto, Cantidad)
+        VALUES (@Producto, @Cantidad);
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF XACT_STATE() <> 0
+            ROLLBACK TRANSACTION;
+
+        THROW;
+    END CATCH;
 END;
 GO
